@@ -1,13 +1,15 @@
 """
 Top–level namespace for the *AIR* SDK.
->>>>>>> b558f6e5 (initial commit)
 
 Environment variables
 ---------------------
-AIR_SILENT        If set to a truthy value (`1`, `true`, `yes`) suppresses the
-                  legal compliance banner.
-AIR_BASE_URL      Override the default API endpoint.
-AIR_CACHE_DIR     Custom cache directory; defaults to “.air”.
+AIR_SILENT          If set to a truthy value (`1`, `true`, `yes`) suppresses the
+                    legal compliance banner.
+AIR_BASE_URL        Override the default API endpoint.
+AIR_CACHE_DIR       Custom cache directory; defaults to ".air".
+USE_LEGACY_API_URL  If set to a truthy value (`1`, `true`) routes requests to
+                    legacy-api.airefinery.accenture.com (Azure Container Apps)
+                    instead of api.airefinery.accenture.com (K8s cluster).
 """
 
 import os
@@ -24,12 +26,14 @@ from importlib import metadata as _metadata
 try:
     __version__: str = _metadata.version(__package__ or "airefinery-sdk")
 except _metadata.PackageNotFoundError:  # pragma: no cover
-    __version__ = "1.27.0"
+    __version__ = "1.28.0"
 
 # Decide the default base url
+# - Default: api.airefinery.accenture.com (production K8s cluster)
+# - USE_LEGACY_API_URL=True: legacy-api.airefinery.accenture.com (Azure Container Apps)
 DEFAULT_BASE_URL = (
-    "https://api-prod-k8s.airefinery.accenture.com"
-    if os.getenv("USE_AIR_API_V2_BASE_URL", "").lower() in {"1", "true"}
+    "https://legacy-api.airefinery.accenture.com"
+    if os.getenv("USE_LEGACY_API_URL", "").lower() in {"1", "true"}
     else "https://api.airefinery.accenture.com"
 )
 
