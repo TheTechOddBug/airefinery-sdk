@@ -39,6 +39,7 @@ from air.types.distiller.realtime import (
     InputAudioCommitEvent,
     InputAudioClearEvent,
     SessionUpdateEvent,
+    InterruptedEvent,
     ClientRequestEvent,
     ServerResponseEvent,
 )
