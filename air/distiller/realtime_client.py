@@ -18,6 +18,9 @@ from air.types.distiller.realtime import (
     InputAudioClearEvent,
     InputAudioCommitEvent,
     InputTextEvent,
+    InterruptedEvent,
+    PlaybackStartedEvent,
+    PlaybackStoppedEvent,
     ResponseCancelEvent,
     ResponseCreatedEvent,
     ResponseDoneEvent,
@@ -65,6 +68,12 @@ class AsyncRealtimeDistillerClient(AsyncDistillerClient):
 
         self._response_lock = asyncio.Lock()
         self._response_created = False
+
+        # Barge-in: set by server capabilities in session.created
+        self._bargein_enabled = False
+
+        # Background task for periodic audio commits (external recording)
+        self._periodic_commit_task: asyncio.Task | None = None
 
         # For Realtime client, add PING messages to queue
         self._queue_ping_messages = True
@@ -158,6 +167,12 @@ class AsyncRealtimeDistillerClient(AsyncDistillerClient):
                 parsed_event = ServerResponseEvent.validate_python(msg)
 
                 if isinstance(parsed_event, SessionCreatedEvent):
+                    capabilities = msg.get("capabilities", {})
+                    self._bargein_enabled = capabilities.get("vad_enabled", False)
+                    logger.debug(
+                        "SessionCreatedEvent detected, bargein_enabled=%s",
+                        self._bargein_enabled,
+                    )
                     await self.set_session_created(True)
                 elif isinstance(parsed_event, ResponseCreatedEvent):
                     await self.set_response_created(True)
@@ -165,14 +180,18 @@ class AsyncRealtimeDistillerClient(AsyncDistillerClient):
                 elif isinstance(parsed_event, ResponseDoneEvent):
                     await self.set_response_created(False)
                     logger.info("Realtime response stream completed.")
+                elif isinstance(parsed_event, InterruptedEvent):
+                    # Barge-in detected - user interrupted the AI response
+                    await self.set_response_created(False)
+                    logger.info("Response interrupted by user (barge-in detected).")
 
             except Exception as validation_error:
                 logger.warning(
-                    f"Failed to validate server response: {validation_error}"
+                    "Failed to validate server response: %s", validation_error
                 )
 
         except Exception as e:
-            logger.error(f"Error processing message: {e}")
+            logger.error("Error processing message: %s", e)
             raise
 
     async def send_audio_chunk(self, audio_bytes: bytes) -> None:
@@ -191,7 +210,9 @@ class AsyncRealtimeDistillerClient(AsyncDistillerClient):
             encoded = await asyncio.to_thread(base64.b64encode, bytes(audio_bytes))
             audio_b64 = encoded.decode("utf-8")
 
-            if await self.get_response_created():
+            # Push-to-talk: block audio during AI response.
+            # Barge-in: allow audio so server VAD can detect interruptions.
+            if not self._bargein_enabled and await self.get_response_created():
                 return
             payload = InputAudioAppendEvent(audio=audio_b64)
             if self.send_queue:
@@ -199,7 +220,7 @@ class AsyncRealtimeDistillerClient(AsyncDistillerClient):
             else:
                 logger.error("Send queue not available")
         except Exception as e:
-            logger.error(f"Failed to send audio chunk: {e}")
+            logger.error("Failed to send audio chunk: %s", e)
             raise
 
     async def commit_audio(self) -> None:
@@ -243,6 +264,30 @@ class AsyncRealtimeDistillerClient(AsyncDistillerClient):
         else:
             logger.error("Send queue not available for session update")
 
+    async def notify_playback_started(self) -> None:
+        """Notify server that client has started playing TTS audio.
+
+        Used by the VAD system to track client playback state for accurate
+        barge-in detection timing.
+        """
+        payload = PlaybackStartedEvent()
+        if self.send_queue:
+            await self.send_queue.put(payload)
+        else:
+            logger.error("Send queue not available for playback started notification")
+
+    async def notify_playback_stopped(self) -> None:
+        """Notify server that client has finished playing TTS audio.
+
+        Used by the VAD system to clear client playback state after audio
+        finishes, preventing false barge-in triggers.
+        """
+        payload = PlaybackStoppedEvent()
+        if self.send_queue:
+            await self.send_queue.put(payload)
+        else:
+            logger.error("Send queue not available for playback stopped notification")
+
     async def cancel_response(self) -> None:
         """Request cancellation of the current in-progress response.
 
@@ -262,6 +307,60 @@ class AsyncRealtimeDistillerClient(AsyncDistillerClient):
             logger.info("Sent response.cancel to server.")
         else:
             logger.error("Send queue not available for response cancel")
+
+    async def start_periodic_commit(self, interval: float = 0.3) -> None:
+        """Start a background task that commits audio every ``interval`` seconds.
+
+        Triggers incremental ASR processing on the server, reducing perceived
+        latency by processing audio before the user finishes speaking.
+
+        Args:
+            interval: Seconds between commits. Defaults to 0.3 (300ms).
+        """
+
+        async def _commit_loop() -> None:
+            try:
+                while True:
+                    await asyncio.sleep(interval)
+                    await self.commit_audio()
+            except asyncio.CancelledError:
+                pass
+
+        if self._periodic_commit_task is not None:
+            self._periodic_commit_task.cancel()
+        self._periodic_commit_task = asyncio.create_task(_commit_loop())
+
+    async def stop_periodic_commit(self) -> None:
+        """Cancel the periodic commit background task."""
+        if self._periodic_commit_task is not None:
+            self._periodic_commit_task.cancel()
+            try:
+                await self._periodic_commit_task
+            except asyncio.CancelledError:
+                pass
+            self._periodic_commit_task = None
+
+    async def start_external_recording(self, commit_interval: float = 0.3) -> None:
+        """Configure audio session and start periodic commits for external audio.
+
+        Use this when audio comes from an external source (e.g., a browser
+        frontend) rather than from ``listen_and_respond()``.
+
+        Args:
+            commit_interval: Seconds between automatic audio commits.
+                Defaults to 0.3 (300ms).
+        """
+        await self.send_update()
+        await self.start_periodic_commit(commit_interval)
+
+    async def stop_external_recording(self) -> None:
+        """Stop periodic commits and flush remaining audio.
+
+        Sends a final ``commit_audio()`` to ensure any buffered audio
+        is processed by ASR.
+        """
+        await self.stop_periodic_commit()
+        await self.commit_audio()
 
     async def connect(
         self,
@@ -300,7 +399,7 @@ class AsyncRealtimeDistillerClient(AsyncDistillerClient):
             raise
 
         except Exception as e:
-            logger.error(f"Failed to connect to realtime voice session: {e}")
+            logger.error("Failed to connect to realtime voice session: %s", e)
             raise
 
     async def close(self) -> None:
@@ -316,7 +415,7 @@ class AsyncRealtimeDistillerClient(AsyncDistillerClient):
 
             await self.set_session_created(False)
         except Exception as e:
-            logger.error(f"Error during session cleanup: {e}")
+            logger.error("Error during session cleanup: %s", e)
             raise
 
     async def _flush_receive_queue(self) -> None:
@@ -388,7 +487,7 @@ class AsyncRealtimeDistillerClient(AsyncDistillerClient):
                     logger.warning("Connection lost during response stream")
                     return
         except Exception as e:
-            logger.error(f"Voice response error: {e}")
+            logger.error("Voice response error: %s", e)
             raise
 
     async def listen_and_respond(  # pragma: no cover  # pylint: disable=too-many-branches,too-many-statements
@@ -470,11 +569,11 @@ class AsyncRealtimeDistillerClient(AsyncDistillerClient):
                     continue
 
                 if response.get("type") == "response.audio_transcript.delta":
-                    logger.info(f"Transcription Delta: {response.get('delta')}")
+                    logger.info("Transcription Delta: %s", response.get("delta"))
                     continue
 
                 if response.get("type") == "response.audio_transcript.done":
-                    logger.info(f"Transcription Final: {response.get('text')}")
+                    logger.info("Transcription Final: %s", response.get("text"))
                     continue
 
                 if response.get("type") == "response.text.delta":
@@ -482,9 +581,7 @@ class AsyncRealtimeDistillerClient(AsyncDistillerClient):
                     # resumes and the keyboard listener re-arms for this agent.
                     if cancel_event and cancel_event.is_set():
                         cancel_event.clear()
-                    logger.info(
-                        f"%%% [Delta] AGENT {response.get('role', 'ASSISTANT')} %%%"
-                    )
+                    logger.info("[Delta] AGENT %s", response.get("role", "ASSISTANT"))
                     logger.info(response.get("content"))
                     continue
 
@@ -586,11 +683,11 @@ class AsyncRealtimeDistillerClient(AsyncDistillerClient):
                     continue
 
                 if response.get("type") == "response.audio_transcript.delta":
-                    logger.info(f"Transcription Delta: {response.get('delta')}")
+                    logger.info("Transcription Delta: %s", response.get("delta"))
                     continue
 
                 if response.get("type") == "response.audio_transcript.done":
-                    logger.info(f"Transcription Final: {response.get('text')}")
+                    logger.info("Transcription Final: %s", response.get("text"))
                     continue
 
                 if response.get("type") == "response.text.delta":
@@ -598,9 +695,7 @@ class AsyncRealtimeDistillerClient(AsyncDistillerClient):
                     # resumes and the keyboard listener re-arms for this agent.
                     if cancel_event and cancel_event.is_set():
                         cancel_event.clear()
-                    logger.info(
-                        f"%%% [Delta] AGENT {response.get('role', 'ASSISTANT')} %%%"
-                    )
+                    logger.info("[Delta] AGENT %s", response.get("role", "ASSISTANT"))
                     logger.info(response.get("content"))
                     continue
 
@@ -618,7 +713,7 @@ class AsyncRealtimeDistillerClient(AsyncDistillerClient):
                 speaker_task.cancel()
 
         except Exception as e:
-            logger.error(f"Error in text query: {e}")
+            logger.error("Error in text query: %s", e)
             raise
         finally:
             if cancel_monitor and not cancel_monitor.done():

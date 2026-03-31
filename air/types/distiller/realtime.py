@@ -35,6 +35,13 @@ class RealtimeEvent(Enum):
 
     SESSION_UPDATE = "session.update"
 
+    # Client -> Server: barge-in playback state signals
+    PLAYBACK_STARTED = "playback.started"
+    PLAYBACK_STOPPED = "playback.stopped"
+
+    # Barge-in interruption event
+    INTERRUPTED = "response.interrupted"
+
 
 # ----------------------------
 # Base Event Class
@@ -175,6 +182,32 @@ class ResponseCancelEvent(RealtimeEventBase):
     )
 
 
+class PlaybackStartedEvent(RealtimeEventBase):
+    """Client notifies server that TTS audio playback has started.
+
+    Used by the VAD system to track client playback state for accurate
+    barge-in detection timing.
+    """
+
+    type: Literal["playback.started"] = Field(
+        default=RealtimeEvent.PLAYBACK_STARTED.value,
+        description="Event type identifier for playback start notification.",
+    )
+
+
+class PlaybackStoppedEvent(RealtimeEventBase):
+    """Client notifies server that TTS audio playback has stopped.
+
+    Used by the VAD system to clear client playback state after audio
+    finishes, preventing false barge-in triggers.
+    """
+
+    type: Literal["playback.stopped"] = Field(
+        default=RealtimeEvent.PLAYBACK_STOPPED.value,
+        description="Event type identifier for playback stop notification.",
+    )
+
+
 # ----------------------------
 # Additional Events
 # ----------------------------
@@ -207,6 +240,22 @@ class SessionUpdateEvent(RealtimeEventBase):
     )
 
 
+class InterruptedEvent(RealtimeEventBase):
+    """Event sent when barge-in is detected and the current response is interrupted.
+
+    This event is generated when the VAD system detects user speech during an active
+    TTS response. Upon receiving this event, clients should:
+    1. Stop any ongoing audio playback immediately
+    2. Clear any pending response buffers
+    3. Prepare to receive and process new user input
+    """
+
+    type: Literal["response.interrupted"] = Field(
+        default=RealtimeEvent.INTERRUPTED.value,
+        description="The event type identifier for barge-in interruption.",
+    )
+
+
 # ----------------------------
 # Type Adapter for Client Request validation
 # ----------------------------
@@ -220,6 +269,8 @@ ClientRequestEvent = TypeAdapter(
             InputAudioCommitEvent,
             InputAudioClearEvent,
             SessionUpdateEvent,
+            PlaybackStartedEvent,
+            PlaybackStoppedEvent,
         ],
         Field(discriminator="type"),
     ]
@@ -241,6 +292,7 @@ ServerResponseEvent = TypeAdapter(
             ResponseDoneEvent,
             ResponseTextDeltaEvent,
             ResponseTextDoneEvent,
+            InterruptedEvent,
         ],
         Field(discriminator="type"),
     ]

@@ -4,12 +4,16 @@ Realtime voice helper functions for AI Refinery SDK.
 
 import asyncio
 import base64
+import json
 import logging
 import sys
 import threading
 import time
 
 import numpy as np
+import websockets
+
+from air.types.distiller.realtime import ResponseCancelEvent
 
 logger = logging.getLogger(__name__)
 
@@ -329,3 +333,234 @@ async def wait_for_cancel_keypress(  # pragma: no cover
         await asyncio.to_thread(_poll_continuously)
     except asyncio.CancelledError:
         stop.set()
+
+
+class RealtimeVoiceBridge:  # pragma: no cover
+    """WebSocket bridge connecting a browser frontend to AIRefinery for barge-in voice.
+
+    The browser equivalent of listen_and_respond() — handles WebSocket server,
+    audio routing, and event forwarding between a browser client and AIRefinery.
+
+    The bridge starts a WebSocket server immediately. When a browser connects,
+    it creates an AIRefinery session and runs two concurrent loops:
+
+    - browser_to_server: routes audio chunks, playback events, recording
+      commands, and cancel signals from the browser to the SDK session
+    - server_to_browser: routes TTS audio, transcripts, session events,
+      and barge-in interrupts from the SDK session to the browser
+
+    Usage::
+
+        client = AsyncAIRefinery(api_key=api_key)
+        client.realtime_distiller.create_project(config_path="config.yaml", project="example")
+        bridge = RealtimeVoiceBridge(client.realtime_distiller, project="example", uuid="demo")
+        await bridge.serve(port=8000)
+    """
+
+    def __init__(self, client, project: str, uuid: str) -> None:
+        self.client = client
+        self.project = project
+        self.uuid = uuid
+
+    async def serve(self, host: str = "0.0.0.0", port: int = 8000) -> None:
+        """Start WebSocket server for browser connections.
+
+        The server starts immediately and creates an AIRefinery session
+        when a browser connects.
+
+        Args:
+            host: Interface to bind to. Defaults to all interfaces.
+            port: Port number. Defaults to 8000.
+        """
+
+        async def _handle(ws, _=None):
+            await self._handle_connection(ws)
+
+        logger.info("Starting WebSocket bridge on ws://%s:%d/", host, port)
+        async with websockets.serve(_handle, host, port):
+            await asyncio.Future()  # run forever
+
+    async def _handle_connection(self, ws) -> None:
+        """Handle a single browser WebSocket connection.
+
+        Creates an AIRefinery session, then runs browser_to_server and
+        server_to_browser concurrently. Exits when either direction
+        fails or completes, cancelling the other.
+        """
+        try:
+            async with self.client(project=self.project, uuid=self.uuid) as session:
+
+                async def browser_to_server():
+                    """Route browser messages to the AIRefinery SDK session."""
+                    try:
+                        async for raw in ws:
+                            data = json.loads(raw)
+                            cmd = data.get("command") or data.get("type")
+
+                            if cmd == "start_recording":
+                                print("[BRIDGE] Starting recording session")
+                                await session.start_external_recording()
+                                await ws.send(json.dumps({"type": "recording_started"}))
+
+                            elif cmd == "stop_recording":
+                                await session.stop_external_recording()
+                                print("[BRIDGE] Stopped recording session")
+                                await ws.send(json.dumps({"type": "recording_stopped"}))
+
+                            elif cmd == "input_audio_buffer.append":
+                                audio_data = None
+                                if "data" in data and isinstance(data["data"], dict):
+                                    audio_data = data["data"].get("chunk")
+                                elif "audio" in data:
+                                    audio_data = data["audio"]
+                                if audio_data:
+                                    await session.send_audio_chunk(
+                                        base64.b64decode(audio_data)
+                                    )
+                                else:
+                                    logger.debug(
+                                        "[BRIDGE] No audio data found in message"
+                                    )
+
+                            elif cmd == "input_audio_buffer.commit":
+                                logger.debug("[BRIDGE] Manual commit received")
+                                await session.commit_audio()
+
+                            elif cmd == "playback.started":
+                                logger.debug(
+                                    "[BRIDGE] Playback event: playback.started"
+                                )
+                                await session.notify_playback_started()
+
+                            elif cmd == "playback.stopped":
+                                logger.debug(
+                                    "[BRIDGE] Playback event: playback.stopped"
+                                )
+                                await session.notify_playback_stopped()
+
+                            elif cmd == "response.cancel":
+                                print("Received barge-in cancel signal from frontend")
+                                await session.send(ResponseCancelEvent())  # type: ignore[arg-type]
+
+                    except websockets.exceptions.ConnectionClosed:
+                        print("Browser WebSocket connection closed")
+                        logger.warning(
+                            "Browser WebSocket connection closed in browser_to_server"
+                        )
+                    except Exception as e:
+                        print(f"Error in browser_to_server: {e}")
+                        logger.error("Error in browser_to_server: %s", e, exc_info=True)
+
+                async def server_to_browser():
+                    """Route AIRefinery server responses to the browser."""
+                    try:
+                        while True:
+                            try:
+                                msg = await session.recv()
+                                t = msg.get("type", "")
+                                payload = {"type": t}
+
+                                logger.debug("Received message: %s", t)
+
+                                if t == "session.created":
+                                    payload["session"] = msg.get("session", {})
+
+                                elif t == "response.audio.delta":
+                                    audio = (
+                                        msg.get("delta")
+                                        or msg.get("audio")
+                                        or msg.get("data")
+                                        or b""
+                                    )
+                                    if audio:
+                                        payload["delta"] = (
+                                            audio
+                                            if isinstance(audio, str)
+                                            else base64.b64encode(audio).decode("ascii")
+                                        )
+                                    else:
+                                        logger.debug("No audio data found in message")
+                                        payload["delta"] = ""
+
+                                elif t in (
+                                    "response.audio_transcript.delta",
+                                    "response.text.delta",
+                                ):
+                                    payload["text"] = msg.get("text", "") or msg.get(
+                                        "delta", ""
+                                    )
+
+                                elif t in (
+                                    "response.audio_transcript.done",
+                                    "response.text.done",
+                                ):
+                                    payload["text"] = msg.get("text", "")
+
+                                elif t == "response.interrupted":
+                                    logger.debug("Server sent interrupt signal")
+
+                                elif t in (
+                                    "response.created",
+                                    "response.done",
+                                    "response.audio.done",
+                                ):
+                                    pass
+
+                                try:
+                                    await ws.send(json.dumps(payload))
+                                except websockets.exceptions.ConnectionClosed:
+                                    logger.debug("Browser WebSocket closed, can't send")
+                                    break
+
+                            except asyncio.CancelledError:
+                                raise
+                            except websockets.exceptions.ConnectionClosed:
+                                print("Browser WebSocket connection closed")
+                                logger.warning(
+                                    "Browser WebSocket connection closed "
+                                    "in server_to_browser"
+                                )
+                                break
+
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as e:
+                        print(f"Error in server_to_browser: {e}")
+                        logger.error("Error in server_to_browser: %s", e, exc_info=True)
+
+                # Run both directions concurrently; exit when either completes
+                done, pending = await asyncio.wait(
+                    [
+                        asyncio.create_task(browser_to_server()),
+                        asyncio.create_task(server_to_browser()),
+                    ],
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                for task in pending:
+                    task.cancel()
+                for task in done:
+                    try:
+                        task.result()
+                    except Exception as e:
+                        print(f"Task failed with error: {e}")
+                        logger.error("Task failed: %s", e, exc_info=True)
+
+                print("WebSocket session complete")
+                logger.info("WebSocket session complete")
+
+        except websockets.exceptions.ConnectionClosed:
+            print("WebSocket connection closed by client")
+            logger.warning("WebSocket connection closed by client")
+        except asyncio.CancelledError:
+            print("WebSocket session cancelled")
+            logger.info("WebSocket session cancelled")
+        except Exception as e:
+            print(f"WebSocket session error: {e}")
+            logger.error("WebSocket session error: %s", e, exc_info=True)
+            try:
+                await ws.send(
+                    json.dumps({"type": "error", "message": f"Server error: {str(e)}"})
+                )
+            except Exception:
+                print("Failed to send error - connection already closed")
+                logger.warning("Failed to send error to browser")
