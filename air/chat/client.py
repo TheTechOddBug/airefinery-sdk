@@ -246,14 +246,15 @@ def _parse_sse_frame_to_obj(frame: str) -> Dict[str, Any] | None:
             ) from sse_err
 
 
-def _ensure_valid_chunk(obj: Dict[str, Any]) -> ChatCompletionChunk:
+def _ensure_valid_chunk(obj: Dict[str, Any]) -> Optional[ChatCompletionChunk]:
     """Validate a parsed SSE JSON object as ChatCompletionChunk.
 
     Args:
         obj: Parsed SSE JSON payload.
 
     Returns:
-        A validated ChatCompletionChunk.
+        A validated ChatCompletionChunk, or None for metadata-only chunks
+        (e.g., Azure OpenAI content filter chunks).
 
     Raises:
         SSEStreamError: If the payload is an explicit error envelope.
@@ -261,6 +262,15 @@ def _ensure_valid_chunk(obj: Dict[str, Any]) -> ChatCompletionChunk:
     """
     if obj.get("object") == "error" or "error" in obj:
         raise SSEStreamError(f"Upstream error payload: {obj}")
+
+    # Skip Azure OpenAI content filter metadata chunks.
+    # These have prompt_filter_results/content_filter_results but empty choices.
+    choices = obj.get("choices")
+    if not choices and (
+        obj.get("prompt_filter_results") or obj.get("content_filter_results")
+    ):
+        return None
+
     try:
         return ChatCompletionChunk.model_validate(obj)
     except Exception as err:
@@ -311,7 +321,9 @@ def _stream_sync_chunks(
             obj = _parse_sse_frame_to_obj(frame)
             if obj is None:
                 return
-            yield _ensure_valid_chunk(obj)
+            chunk = _ensure_valid_chunk(obj)
+            if chunk is not None:
+                yield chunk
 
 
 async def _stream_async_chunks(
@@ -395,7 +407,9 @@ async def _stream_async_chunks(
                     if obj is None:
                         return
 
-                    yield _ensure_valid_chunk(obj)
+                    chunk = _ensure_valid_chunk(obj)
+                    if chunk is not None:
+                        yield chunk
         except asyncio.CancelledError:
             # Propagate cancellation to allow consumers to stop reading cleanly
             raise

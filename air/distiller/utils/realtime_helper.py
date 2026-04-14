@@ -30,7 +30,7 @@ CHUNK_DURATION = 0.3  # seconds - capture/playback chunk duration (e.g. 300ms)
 
 def import_sounddevice():
     try:
-        import sounddevice as sd
+        import sounddevice as sd  # type: ignore[reportMissingImports]
 
         return sd
 
