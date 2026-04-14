@@ -545,7 +545,7 @@ TranscriptionStreamEvent: TypeAlias = Annotated[
         TranscriptionWordEvent,
         TranscriptionSegmentEvent,
     ],
-    {"discriminator": "type"},
+    Field(discriminator="type"),
 ]
 
 

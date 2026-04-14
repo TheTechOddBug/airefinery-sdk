@@ -13,6 +13,7 @@ from air.embeddings import (
     AsyncEmbeddingsClient,
     EmbeddingsClient,
 )
+from air.governance import AsyncGovernanceClient, GovernanceClient
 from air.fine_tuning import AsyncFineTuningClient, FineTuningClient
 from air.images import (
     AsyncImagesClient,
@@ -181,6 +182,13 @@ class AsyncAIRefinery:  # pylint: disable=too-many-instance-attributes,too-few-p
             default_headers=self.default_headers,
         )
 
+        # Provides async governance functionalities
+        self.governance = AsyncGovernanceClient(
+            base_url=self.base_url,
+            api_key=self.api_key,
+            default_headers=self.default_headers,
+        )
+
         # Provides async observability sub-clients
         self.traces = AsyncTracesClient(
             base_url=self.base_url,
@@ -244,7 +252,9 @@ class AIRefinery:  # pylint: disable=too-many-instance-attributes,too-few-public
         # Use knowledge
         knowledge_client = client.knowledge
         knowledge_client.create_project(config)
-        knowledge_response = await knowledge_client.document_processing.parse_documents(file_path='', model='')
+        knowledge_response = await knowledge_client.document_processing.parse_documents(
+            file_path='', model=''
+        )
 
         # Attempting to use client.distiller will raise an exception
         # (not supported in sync mode).
@@ -327,6 +337,13 @@ class AIRefinery:  # pylint: disable=too-many-instance-attributes,too-few-public
             default_headers=self.default_headers,
         )
 
+        # Provides sync governance functionalities
+        self.governance = GovernanceClient(
+            base_url=self.base_url,
+            api_key=self.api_key,
+            default_headers=self.default_headers,
+        )
+
         # Provides synchronous observability sub-clients
         self.traces = TracesClient(
             base_url=self.base_url,
@@ -358,5 +375,6 @@ class AIRefinery:  # pylint: disable=too-many-instance-attributes,too-few-public
         Accessing this property in the synchronous client will raise a NotImplementedError.
         """
         raise NotImplementedError(
-            "Realtime Distiller is only available in async mode. Please use AsyncAIRefinery instead."
+            "Realtime Distiller is only available in async mode. "
+            "Please use AsyncAIRefinery instead."
         )

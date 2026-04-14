@@ -26,7 +26,7 @@ from importlib import metadata as _metadata
 try:
     __version__: str = _metadata.version(__package__ or "airefinery-sdk")
 except _metadata.PackageNotFoundError:  # pragma: no cover
-    __version__ = "1.29.0"
+    __version__ = "1.30.0"
 
 # Decide the default base url
 # - Default: api.airefinery.accenture.com (production K8s cluster)
@@ -49,6 +49,7 @@ from air.api import PostgresAPI  # noqa:  E402  (re-export)
 from air.client import AIRefinery, AsyncAIRefinery  # noqa:  E402
 from air.distiller.client import AsyncDistillerClient  # noqa:  E402
 from air.distiller.realtime_client import AsyncRealtimeDistillerClient  # noqa:  E402
+from air.governance import AsyncGovernanceClient, GovernanceClient  # noqa:  E402
 
 # Backwards-compatibility alias
 DistillerClient = AsyncDistillerClient
@@ -60,6 +61,8 @@ __all__ = [
     "AsyncAIRefinery",
     "AsyncDistillerClient",
     "AsyncRealtimeDistillerClient",
+    "AsyncGovernanceClient",
+    "GovernanceClient",
     "DistillerClient",
     # Constants
     "BASE_URL",

@@ -7,6 +7,14 @@ from air.types.chat import (
     ChatCompletionMessageToolCall,
 )
 from air.types.embeddings import CreateEmbeddingResponse, Embedding
+from air.types.governance import (
+    APIKeyCreated,
+    APIKeyInfo,
+    Organization,
+    OrgMembership,
+    Project,
+    Workspace,
+)
 from air.types.fine_tuning import FineTuningRequest
 from air.types.images import ImagesResponse, SegmentationResponse
 from air.types.knowledge import (
