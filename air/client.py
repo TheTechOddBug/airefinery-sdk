@@ -8,13 +8,14 @@ from air import BASE_URL
 from air.audio import AsyncAudio, Audio
 from air.auth import TokenProvider
 from air.chat import AsyncChatClient, ChatClient
+from air.compression import AsyncCompressionClient, CompressionClient
 from air.distiller import AsyncDistillerClient, AsyncRealtimeDistillerClient
 from air.embeddings import (
     AsyncEmbeddingsClient,
     EmbeddingsClient,
 )
-from air.governance import AsyncGovernanceClient, GovernanceClient
 from air.fine_tuning import AsyncFineTuningClient, FineTuningClient
+from air.governance import AsyncGovernanceClient, GovernanceClient
 from air.images import (
     AsyncImagesClient,
     ImagesClient,
@@ -157,6 +158,12 @@ class AsyncAIRefinery:  # pylint: disable=too-many-instance-attributes,too-few-p
         )
         # Provides async images functionalities
         self.images = AsyncImagesClient(
+            base_url=self.base_url,
+            api_key=self.api_key,
+            default_headers=self.default_headers,
+        )
+        # Provides async compression functionalities
+        self.compression = AsyncCompressionClient(
             base_url=self.base_url,
             api_key=self.api_key,
             default_headers=self.default_headers,
@@ -311,6 +318,12 @@ class AIRefinery:  # pylint: disable=too-many-instance-attributes,too-few-public
         )
         # Provides sync images functionalities
         self.images = ImagesClient(
+            base_url=self.base_url,
+            api_key=self.api_key,
+            default_headers=self.default_headers,
+        )
+        # Provides sync compression functionalities
+        self.compression = CompressionClient(
             base_url=self.base_url,
             api_key=self.api_key,
             default_headers=self.default_headers,
