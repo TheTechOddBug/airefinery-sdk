@@ -6,7 +6,31 @@ from air.types.chat import (
     ChatCompletionMessage,
     ChatCompletionMessageToolCall,
 )
+from air.types.compression import CompressedPrompt, CompressionResponse
+from air.types.distiller.realtime import (
+    ClientRequestEvent,
+    InputAudioAppendEvent,
+    InputAudioClearEvent,
+    InputAudioCommitEvent,
+    InputTextEvent,
+    InterruptedEvent,
+    RealtimeEvent,
+    RealtimeEventBase,
+    ResponseAudioDeltaEvent,
+    ResponseAudioDoneEvent,
+    ResponseCancelEvent,
+    ResponseCreatedEvent,
+    ResponseDoneEvent,
+    ResponseTextDeltaEvent,
+    ResponseTextDoneEvent,
+    ResponseTranscriptDeltaEvent,
+    ResponseTranscriptDoneEvent,
+    ServerResponseEvent,
+    SessionCreatedEvent,
+    SessionUpdateEvent,
+)
 from air.types.embeddings import CreateEmbeddingResponse, Embedding
+from air.types.fine_tuning import FineTuningRequest
 from air.types.governance import (
     APIKeyCreated,
     APIKeyInfo,
@@ -15,7 +39,6 @@ from air.types.governance import (
     Project,
     Workspace,
 )
-from air.types.fine_tuning import FineTuningRequest
 from air.types.images import ImagesResponse, SegmentationResponse
 from air.types.knowledge import (
     ChunkingConfig,
@@ -29,25 +52,3 @@ from air.types.knowledge import (
 )
 from air.types.models import Model
 from air.types.moderations import ModerationCreateResponse
-from air.types.distiller.realtime import (
-    RealtimeEvent,
-    RealtimeEventBase,
-    SessionCreatedEvent,
-    ResponseTranscriptDeltaEvent,
-    ResponseTranscriptDoneEvent,
-    ResponseCreatedEvent,
-    ResponseAudioDeltaEvent,
-    ResponseAudioDoneEvent,
-    ResponseDoneEvent,
-    ResponseTextDeltaEvent,
-    ResponseTextDoneEvent,
-    InputAudioAppendEvent,
-    InputTextEvent,
-    ResponseCancelEvent,
-    InputAudioCommitEvent,
-    InputAudioClearEvent,
-    SessionUpdateEvent,
-    InterruptedEvent,
-    ClientRequestEvent,
-    ServerResponseEvent,
-)
